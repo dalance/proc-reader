@@ -182,106 +182,40 @@ impl Drop for ProcReader {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Functions
+// Test
 // -------------------------------------------------------------------------------------------------
-
-//pub fn test() -> Result<()>{
-//    let pid = Pid::from_raw(34221);
-//    attach(pid)?;
-//    set_tracesysgood(pid)?;
-//
-//    let mut is_enter_stop: bool = false;
-//    let mut prev_orig_rax: u64 = 0;
-//    for i in 0..30000 {
-//        match waitpid(pid, None) {
-//            Ok(WaitStatus::Exited(_, _)) => break,
-//            Ok(WaitStatus::PtraceSyscall(x)) => {
-//                let regs = get_regs(pid)?;
-//
-//                is_enter_stop = if prev_orig_rax == regs.orig_rax { !is_enter_stop } else { true };
-//                prev_orig_rax = regs.orig_rax;
-//                if regs.orig_rax == libc::SYS_write as u64 && is_enter_stop {
-//                    println!("{:?}", x);
-//                    println!("{:?}", regs.orig_rax);
-//                    let out = peek_bytes(pid, regs.rsi, regs.rdx);
-//                    println!("{}", String::from_utf8(out).unwrap());
-//                }
-//            }
-//            Err(_) => break,
-//            _ => (),
-//        }
-//        if i == 29999 {
-//            let _ = detach(pid);
-//        } else {
-//            let _ = syscall(pid);
-//        }
-//    }
-//
-//    Ok(())
-//}
-//
-//fn set_tracesysgood(pid: Pid) -> Result<()> {
-//    loop {
-//        match waitpid(pid, None)? {
-//            WaitStatus::Stopped(_, Signal::SIGSTOP) => {
-//                setoptions(pid, Options::PTRACE_O_TRACESYSGOOD)?;
-//                syscall(pid)?;
-//                break;
-//            }
-//            _ => {
-//                syscall(pid)?;
-//            }
-//        }
-//    }
-//
-//    Ok(())
-//}
-//
-//fn get_regs(pid: Pid) -> Result<user_regs_struct> {
-//    let mut regs: user_regs_struct = unsafe { mem::zeroed() };
-//    let regs_ptr = NonNull::new(&mut regs).unwrap();
-//    unsafe {
-//        #[allow(deprecated)]
-//        let _ = ptrace(PTRACE_GETREGS, pid, ptr::null_mut(), regs_ptr.as_ptr() as *mut libc::c_void);
-//    }
-//    Ok(regs)
-//}
-//
-//fn peek_bytes(pid: Pid, addr: u64, size: u64) -> Vec<u8> {
-//    let mut vec = (0..(size + 7) / 8)
-//        .filter_map(|i| {
-//            unsafe {
-//                #[allow(deprecated)]
-//                ptrace(
-//                    PTRACE_PEEKDATA,
-//                    pid,
-//                    (addr + 8 * i) as *mut libc::c_void,
-//                    ptr::null_mut(),
-//                ).map(|l| mem::transmute(l))
-//                    .ok()
-//            }
-//        })
-//        .collect::<Vec<[u8; 8]>>()
-//        .concat();
-//    vec.truncate(size as usize);
-//    vec
-//}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::BufReader;
+    use std::process::Command;
     use std::time::Duration;
     use std::thread;
 
     #[test]
-    fn test2() {
-        let pid = Pid::from_raw(34221);
+    fn test_bufreader() {
+        let child = Command::new("./script/echo.sh").spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
         let mut reader = BufReader::new(ProcReader::new(pid));
+
         thread::sleep(Duration::from_secs(3));
+
         let mut line = String::new();
-        let len = reader.read_to_string(&mut line);
-        //println!("{}", line);
-        println!("{:?}", len);
+        let _ = reader.read_to_string(&mut line);
+        assert_eq!( "aaa\nbbb\nccc\n", line);
+    }
+
+    #[test]
+    fn test_short_array() {
+        let child = Command::new("./script/echo.sh").spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = ProcReader::new(pid);
+
+        thread::sleep(Duration::from_secs(3));
+
+        let mut buf = [0;10];
+        let _ = reader.read_exact(&mut buf);
+        assert_eq!("aaa\nbbb\ncc", String::from_utf8(buf.to_vec()).unwrap());
     }
 }
