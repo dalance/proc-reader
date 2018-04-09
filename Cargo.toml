@@ -1,0 +1,15 @@
+[package]
+name = "proc-reader"
+version = "0.1.0"
+authors = ["dalance@gmail.com"]
+repository = "https://github.com/dalance/proc-color"
+keywords = []
+categories = []
+license = "MIT"
+readme = "README.md"
+description = "A std::io::Read implementation for stdout/stderr of other proccess"
+
+[dependencies]
+error-chain = "*"
+libc        = "*"
+nix         = "*"
