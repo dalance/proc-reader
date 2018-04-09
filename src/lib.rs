@@ -199,7 +199,7 @@ mod tests {
         let pid = Pid::from_raw(child.id() as i32);
         let mut reader = BufReader::new(ProcReader::new(pid));
 
-        thread::sleep(Duration::from_secs(3));
+        thread::sleep(Duration::from_secs(4));
 
         let mut line = String::new();
         let _ = reader.read_to_string(&mut line);
@@ -212,7 +212,7 @@ mod tests {
         let pid = Pid::from_raw(child.id() as i32);
         let mut reader = ProcReader::new(pid);
 
-        thread::sleep(Duration::from_secs(3));
+        thread::sleep(Duration::from_secs(4));
 
         let mut buf = [0;10];
         let _ = reader.read_exact(&mut buf);
