@@ -1,7 +1,6 @@
 //! A std::io::Read implementation for stdout/stderr of other process.
 //!
 //! # Examples
-//! The simplest usage is the following.
 //!
 //! ```
 //! # extern crate nix;
@@ -74,7 +73,7 @@ enum ProcReaderMsg {
     Stop,
 }
 
-/// A std::io::Read implementation for stdout/stderr of other process.
+/// The struct `ProcReader` provide reader from stdout/stderr of other process.
 pub struct ProcReader {
     ctl: Sender<ProcReaderMsg>,
     buf: Receiver<Vec<u8>>,
@@ -91,17 +90,17 @@ enum StdType {
 }
 
 impl ProcReader {
-    /// Create `ProcReader` for stdout/stderr of the process specified by `pid`
+    /// Create a new `ProcReader` for stdout/stderr of the process specified by `pid`
     pub fn from_stdany(pid: Pid) -> Self {
         ProcReader::new(pid, StdType::Any)
     }
 
-    /// Create `ProcReader` for stdout of the process specified by `pid`
+    /// Create a new `ProcReader` for stdout of the process specified by `pid`
     pub fn from_stdout(pid: Pid) -> Self {
         ProcReader::new(pid, StdType::Out)
     }
 
-    /// Create `ProcReader` for stderr of the process specified by `pid`
+    /// Create a new `ProcReader` for stderr of the process specified by `pid`
     pub fn from_stderr(pid: Pid) -> Self {
         ProcReader::new(pid, StdType::Err)
     }
