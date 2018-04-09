@@ -1,3 +1,36 @@
+//! A std::io::Read implementation for stdout/stderr of other process.
+//!
+//! # Examples
+//! The simplest usage is the following.
+//!
+//! ```
+//! # extern crate nix;
+//! # extern crate proc_reader;
+//! # use nix::unistd::Pid;
+//! # use proc_reader::ProcReader;
+//! # use std::process::Command;
+//! # use std::io::{BufReader, Read};
+//! # use std::time::Duration;
+//! # use std::thread;
+//! # fn main() {
+//! // Create a process for reading stdout
+//! let mut child = Command::new("sh").arg("-c").arg("sleep 1; echo aaa").spawn().unwrap();
+//!
+//! // Create `ProcReader` from pid
+//! let pid = Pid::from_raw(child.id() as i32);
+//! let reader = ProcReader::from_stdout(pid);
+//! let mut reader = BufReader::new(reader);
+//!
+//! // Wait the end of process
+//! thread::sleep(Duration::from_secs(2));
+//!
+//! // Read from `ProcReader`
+//! let mut line = String::new();
+//! let _ = reader.read_to_string(&mut line);
+//! assert_eq!( "aaa\n", line);
+//! # }
+//! ```
+
 #[macro_use]
 extern crate error_chain;
 extern crate libc;
@@ -42,6 +75,7 @@ enum ProcReaderMsg {
     Stop,
 }
 
+/// A std::io::Read implementation for stdout/stderr of other process.
 pub struct ProcReader {
     ctl: Sender<ProcReaderMsg>,
     buf: Receiver<Vec<u8>>,
@@ -51,20 +85,35 @@ pub struct ProcReader {
 }
 
 #[derive(PartialEq)]
-pub enum Source {
-    Both,
-    StdOut,
-    StdErr,
+enum StdType {
+    Any,
+    Out,
+    Err,
 }
 
 impl ProcReader {
-    pub fn new(pid: Pid, src: Source) -> Self {
+    /// Create `ProcReader` for stdout/stderr of the process specified by `pid`
+    pub fn from_stdany(pid: Pid) -> Self {
+        ProcReader::new(pid, StdType::Any)
+    }
+
+    /// Create `ProcReader` for stdout of the process specified by `pid`
+    pub fn from_stdout(pid: Pid) -> Self {
+        ProcReader::new(pid, StdType::Out)
+    }
+
+    /// Create `ProcReader` for stderr of the process specified by `pid`
+    pub fn from_stderr(pid: Pid) -> Self {
+        ProcReader::new(pid, StdType::Err)
+    }
+
+    fn new(pid: Pid, typ: StdType) -> Self {
         let (ctl_tx, ctl_rx) = channel();
         let (buf_tx, buf_rx) = channel();
         let (err_tx, err_rx) = channel();
 
         let child = thread::spawn(move || {
-            match ProcReader::collect(pid, src, ctl_rx, buf_tx) {
+            match ProcReader::collect(pid, typ, ctl_rx, buf_tx) {
                 Err(x) => {
                     let _ = err_tx.send(x);
                 }
@@ -81,7 +130,7 @@ impl ProcReader {
         }
     }
 
-    fn collect(pid: Pid, src: Source, ctl_rx: Receiver<ProcReaderMsg>, buf_tx: Sender<Vec<u8>>) -> Result<()> {
+    fn collect(pid: Pid, typ: StdType, ctl_rx: Receiver<ProcReaderMsg>, buf_tx: Sender<Vec<u8>>) -> Result<()> {
         attach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
         ProcReader::set_tracesysgood(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
 
@@ -100,14 +149,14 @@ impl ProcReader {
                     prev_orig_rax = regs.orig_rax;
                     if regs.orig_rax == libc::SYS_write as u64 && is_enter_stop {
                         let out = ProcReader::peek_bytes(pid, regs.rsi, regs.rdx);
-                        let out_type = regs.rdi;
+                        let out_typ = regs.rdi;
 
-                        let send_stdout = src == Source::Both || src == Source::StdOut;
-                        let send_stderr = src == Source::Both || src == Source::StdErr;
+                        let send_stdout = typ == StdType::Any || typ == StdType::Out;
+                        let send_stderr = typ == StdType::Any || typ == StdType::Err;
 
-                        if out_type == 1 && send_stdout {
+                        if out_typ == 1 && send_stdout {
                             buf_tx.send(out)?;
-                        } else if out_type == 2 && send_stderr {
+                        } else if out_typ == 2 && send_stderr {
                             buf_tx.send(out)?;
                         }
                     }
@@ -256,7 +305,7 @@ mod tests {
     fn test_bufreader() {
         let child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
         let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::new(pid, Source::StdOut));
+        let mut reader = BufReader::new(ProcReader::from_stdout(pid));
 
         thread::sleep(Duration::from_secs(4));
 
@@ -269,7 +318,7 @@ mod tests {
     fn test_short_array() {
         let child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
         let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = ProcReader::new(pid, Source::StdOut);
+        let mut reader = ProcReader::from_stdout(pid);
 
         thread::sleep(Duration::from_secs(4));
 
@@ -282,7 +331,7 @@ mod tests {
     fn test_kill() {
         let mut child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
         let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = ProcReader::new(pid, Source::StdOut);
+        let mut reader = ProcReader::from_stdout(pid);
         let _ = child.kill();
 
         thread::sleep(Duration::from_secs(4));
@@ -296,7 +345,7 @@ mod tests {
     fn test_kill2() {
         let mut child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
         let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = ProcReader::new(pid, Source::StdOut);
+        let mut reader = ProcReader::from_stdout(pid);
 
         thread::sleep(Duration::from_secs(2));
         let _ = child.kill();
@@ -311,7 +360,7 @@ mod tests {
     fn test_stderr() {
         let child = Command::new("perl").arg("-e").arg(SCRIPT_WITH_ERR).spawn().unwrap();
         let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::new(pid, Source::StdErr));
+        let mut reader = BufReader::new(ProcReader::from_stderr(pid));
 
         thread::sleep(Duration::from_secs(2));
 
@@ -324,7 +373,7 @@ mod tests {
     fn test_both() {
         let child = Command::new("perl").arg("-e").arg(SCRIPT_WITH_ERR).spawn().unwrap();
         let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::new(pid, Source::Both));
+        let mut reader = BufReader::new(ProcReader::from_stdany(pid));
 
         thread::sleep(Duration::from_secs(2));
 
