@@ -53,15 +53,16 @@ use std::thread::{self, JoinHandle};
 
 error_chain! {
     errors {
+        #[doc = "a variant for process access error"]
         ProcAccessFailed(pid: Pid) {
             description("process access failed")
             display("failed to access process ({})\n", pid)
         }
     }
     foreign_links {
-        Nix(::nix::Error);
-        Recv(::std::sync::mpsc::RecvError);
-        Send(::std::sync::mpsc::SendError<Vec<u8>>);
+        Nix(::nix::Error) #[doc = "a variant for `nix`"];
+        Recv(::std::sync::mpsc::RecvError) #[doc = "a variant for `std::sync::misc::RecvError`"];
+        Send(::std::sync::mpsc::SendError<Vec<u8>>) #[doc = "a variant for `std::sync::misc::SendError`"];
     }
 }
 
