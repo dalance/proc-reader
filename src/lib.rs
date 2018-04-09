@@ -21,6 +21,12 @@ use std::thread::{self, JoinHandle};
 // -------------------------------------------------------------------------------------------------
 
 error_chain! {
+    errors {
+        ProcAccessFailed(pid: Pid) {
+            description("process access failed")
+            display("failed to access process ({})\n", pid)
+        }
+    }
     foreign_links {
         Nix(::nix::Error);
         Recv(::std::sync::mpsc::RecvError);
@@ -39,7 +45,8 @@ enum ProcReaderMsg {
 pub struct ProcReader {
     ctl: Sender<ProcReaderMsg>,
     buf: Receiver<Vec<u8>>,
-    child: Option<JoinHandle<Result<()>>>,
+    err: Receiver<Error>,
+    child: Option<JoinHandle<()>>,
     rest: Vec<u8>,
 }
 
@@ -47,27 +54,36 @@ impl ProcReader {
     pub fn new(pid: Pid) -> Self {
         let (ctl_tx, ctl_rx) = channel();
         let (buf_tx, buf_rx) = channel();
+        let (err_tx, err_rx) = channel();
 
-        let child = thread::spawn(move || ProcReader::collect(pid, ctl_rx, buf_tx));
+        let child = thread::spawn(move || {
+            match ProcReader::collect(pid, ctl_rx, buf_tx) {
+                Err(x) => {
+                    let _ = err_tx.send(x);
+                }
+                _ => (),
+            }
+        });
 
         ProcReader {
             ctl: ctl_tx,
             buf: buf_rx,
+            err: err_rx,
             child: Some(child),
             rest: Vec::new(),
         }
     }
 
     fn collect(pid: Pid, ctl_rx: Receiver<ProcReaderMsg>, buf_tx: Sender<Vec<u8>>) -> Result<()> {
-        attach(pid)?;
-        ProcReader::set_tracesysgood(pid)?;
+        attach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+        ProcReader::set_tracesysgood(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
 
         let mut is_enter_stop = false;
         let mut prev_orig_rax = 0;
         loop {
-            match waitpid(pid, None) {
-                Ok(WaitStatus::PtraceSyscall(_)) => {
-                    let regs = ProcReader::get_regs(pid)?;
+            match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
+                WaitStatus::PtraceSyscall(_) => {
+                    let regs = ProcReader::get_regs(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
 
                     is_enter_stop = if prev_orig_rax == regs.orig_rax {
                         !is_enter_stop
@@ -80,17 +96,16 @@ impl ProcReader {
                         buf_tx.send(out)?;
                     }
                 }
-                Ok(WaitStatus::Exited(_, _)) => break,
-                Err(_) => break,
+                WaitStatus::Exited(_, _) => break,
                 _ => (),
             }
 
             match ctl_rx.try_recv() {
                 Ok(ProcReaderMsg::Stop) => {
-                    detach(pid)?;
+                    detach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     break;
                 }
-                _ => syscall(pid)?,
+                _ => syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?,
             }
         }
         Ok(())
@@ -98,14 +113,14 @@ impl ProcReader {
 
     fn set_tracesysgood(pid: Pid) -> Result<()> {
         loop {
-            match waitpid(pid, None)? {
+            match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
                 WaitStatus::Stopped(_, Signal::SIGSTOP) => {
-                    setoptions(pid, Options::PTRACE_O_TRACESYSGOOD)?;
-                    syscall(pid)?;
+                    setoptions(pid, Options::PTRACE_O_TRACESYSGOOD).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     break;
                 }
                 _ => {
-                    syscall(pid)?;
+                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                 }
             }
         }
@@ -149,6 +164,11 @@ impl ProcReader {
 
 impl Read for ProcReader {
     fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, std::io::Error> {
+        let err = match self.err.try_recv() {
+            Ok(x) => Some(x),
+            _ => None,
+        };
+
         loop {
             match self.buf.try_recv() {
                 Ok(mut x) => self.rest.append(&mut x),
@@ -156,17 +176,25 @@ impl Read for ProcReader {
             }
         }
 
-        if buf.len() >= self.rest.len() {
+        let len = if buf.len() >= self.rest.len() {
             let len = self.rest.len();
             self.rest.resize(buf.len(), 0);
             buf.copy_from_slice(&self.rest);
             self.rest.clear();
-            Ok(len)
+            len
         } else {
             let len = buf.len();
             let rest = self.rest.split_off(len);
             buf.copy_from_slice(&self.rest);
             self.rest = rest;
+            len
+        };
+
+        if len != 0 {
+            Ok(len)
+        } else if let Some(err) = err {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, format!("{}", err)))
+        } else {
             Ok(len)
         }
     }
@@ -217,5 +245,34 @@ mod tests {
         let mut buf = [0;10];
         let _ = reader.read_exact(&mut buf);
         assert_eq!("aaa\nbbb\ncc", String::from_utf8(buf.to_vec()).unwrap());
+    }
+
+    #[test]
+    fn test_kill() {
+        let mut child = Command::new("./script/echo.sh").spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = ProcReader::new(pid);
+        let _ = child.kill();
+
+        thread::sleep(Duration::from_secs(4));
+
+        let mut buf = [0;10];
+        let ret = reader.read_exact(&mut buf);
+        assert_eq!(&format!("{:?}", ret)[0..70], "Err(Custom { kind: Other, error: StringError(\"failed to access process");
+    }
+
+    #[test]
+    fn test_kill2() {
+        let mut child = Command::new("./script/echo.sh").spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = ProcReader::new(pid);
+
+        thread::sleep(Duration::from_secs(2));
+        let _ = child.kill();
+        thread::sleep(Duration::from_secs(2));
+
+        let mut buf = [0;10];
+        let ret = reader.read_exact(&mut buf);
+        assert_eq!(&format!("{:?}", ret)[0..80], "Err(Custom { kind: UnexpectedEof, error: StringError(\"failed to fill whole buffe");
     }
 }
