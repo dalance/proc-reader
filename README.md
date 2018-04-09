@@ -13,7 +13,7 @@ A std::io::Read implementation for stdout/stderr of other process
 
 ```Cargo.toml
 [dependencies]
-proc-reader = "0.1.2"
+proc-reader = "0.2.0"
 ```
 
 ## Example
