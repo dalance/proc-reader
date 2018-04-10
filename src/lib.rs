@@ -72,6 +72,7 @@ error_chain! {
 
 enum ProcReaderMsg {
     Stop,
+    Redirect,
 }
 
 /// The struct `ProcReader` provide reader from stdout/stderr of other process.
@@ -106,6 +107,12 @@ impl ProcReader {
         ProcReader::new(pid, StdType::Err)
     }
 
+    /// Enable redirect trace
+    pub fn with_redirect(self) -> Self {
+        let _ = self.ctl.send(ProcReaderMsg::Redirect);
+        self
+    }
+
     fn new(pid: Pid, typ: StdType) -> Self {
         let (ctl_tx, ctl_rx) = channel();
         let (buf_tx, buf_rx) = channel();
@@ -133,34 +140,70 @@ impl ProcReader {
         attach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
         ProcReader::set_tracesysgood(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
 
-        let mut is_enter_stop = false;
+        // pid stack
+        let mut pids = Vec::new();
+        pids.push(pid);
+
+        // fd stack
+        let mut fd = [0;1024];
+        fd[1] = 1;
+        fd[2] = 2;
+        let mut fds = Vec::new();
+        fds.push(fd.clone());
+
+        let mut enable_redirect = false;
+        let mut is_syscall_before = false;
         let mut prev_orig_rax = 0;
+
         loop {
+            let mut pid = *pids.last().unwrap();
             match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
                 WaitStatus::PtraceSyscall(_) => {
                     let regs = ProcReader::get_regs(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
 
-                    is_enter_stop = if prev_orig_rax == regs.orig_rax {
-                        !is_enter_stop
+                    is_syscall_before = if prev_orig_rax == regs.orig_rax {
+                        !is_syscall_before
                     } else {
                         true
                     };
                     prev_orig_rax = regs.orig_rax;
-                    if regs.orig_rax == libc::SYS_write as u64 && is_enter_stop {
+
+                    if !is_syscall_before && enable_redirect {
+                        fd = ProcReader::update_fd(fd, regs);
+                    }
+
+                    let sys_clone = regs.orig_rax == libc::SYS_clone as u64;
+                    let sys_fork = regs.orig_rax == libc::SYS_fork as u64;
+                    let sys_vfork = regs.orig_rax == libc::SYS_vfork as u64;
+
+                    if (sys_clone || sys_fork || sys_vfork) && !is_syscall_before {
+                        pid = Pid::from_raw(regs.rax as i32);
+                        pids.push(pid);
+                        fds.push(fd.clone());
+                        continue;
+                    }
+
+                    if regs.orig_rax == libc::SYS_write as u64 && is_syscall_before {
                         let out = ProcReader::peek_bytes(pid, regs.rsi, regs.rdx);
                         let out_typ = regs.rdi;
 
-                        let send_stdout = typ == StdType::Any || typ == StdType::Out;
-                        let send_stderr = typ == StdType::Any || typ == StdType::Err;
+                        let send_stdout = fd[out_typ as usize] == 1 && (typ == StdType::Any || typ == StdType::Out);
+                        let send_stderr = fd[out_typ as usize] == 2 && (typ == StdType::Any || typ == StdType::Err);
 
-                        if out_typ == 1 && send_stdout {
-                            buf_tx.send(out)?;
-                        } else if out_typ == 2 && send_stderr {
+                        if send_stdout || send_stderr {
                             buf_tx.send(out)?;
                         }
                     }
                 }
-                WaitStatus::Exited(_, _) => break,
+                WaitStatus::Exited(_, _) => {
+                    pids.pop();
+                    if pids.is_empty() {
+                        break;
+                    } else {
+                        pid = *pids.last().unwrap();
+                        fd = fds.pop().unwrap();
+                    }
+                }
                 _ => (),
             }
 
@@ -169,7 +212,13 @@ impl ProcReader {
                     detach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     break;
                 }
-                _ => syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?,
+                Ok(ProcReaderMsg::Redirect) => {
+                    enable_redirect = true;
+                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                }
+                _ => {
+                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                }
             }
         }
         Ok(())
@@ -179,7 +228,7 @@ impl ProcReader {
         loop {
             match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
                 WaitStatus::Stopped(_, Signal::SIGSTOP) => {
-                    setoptions(pid, Options::PTRACE_O_TRACESYSGOOD).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    setoptions(pid, Options::PTRACE_O_TRACESYSGOOD | Options::PTRACE_O_TRACECLONE | Options::PTRACE_O_TRACEFORK | Options::PTRACE_O_TRACEVFORK).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     break;
                 }
@@ -223,6 +272,25 @@ impl ProcReader {
             .concat();
         vec.truncate(size as usize);
         vec
+    }
+
+    fn update_fd(mut fd: [u64;1024], regs: user_regs_struct) -> [u64;1024] {
+        // detect dup2 for redirect
+        if regs.orig_rax == libc::SYS_dup2 as u64 {
+            let src = regs.rdi;
+            let dst = regs.rsi;
+            fd[dst as usize] = fd[src as usize];
+        }
+
+        // detect fcntl for fd backup
+        if regs.orig_rax == libc::SYS_fcntl as u64 {
+            if regs.rsi == libc::F_DUPFD as u64 {
+                let src = regs.rdi;
+                let dst = regs.rax;
+                fd[dst as usize] = fd[src as usize];
+            }
+        }
+        fd
     }
 }
 
@@ -298,6 +366,14 @@ mod tests {
         sleep 1;
         print "aaa\n";
         warn "eee\n";
+    "#;
+
+    static SCRIPT_REDIRECT: &'static str = r#"
+        sleep 1;
+        echo 'aaa';
+        echo 'bbb' > /dev/null 1>&2;
+        perl -e 'warn "ccc\n"' 2>&1;
+        perl -e 'warn "ddd\n"';
     "#;
 
     #[test]
@@ -381,4 +457,55 @@ mod tests {
         assert_eq!( "aaa\neee\n", line);
     }
 
+    #[test]
+    fn test_stdout_without_redirect() {
+        let child = Command::new("sh").arg("-c").arg(SCRIPT_REDIRECT).spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = BufReader::new(ProcReader::from_stdout(pid));
+
+        thread::sleep(Duration::from_secs(4));
+
+        let mut line = String::new();
+        let _ = reader.read_to_string(&mut line);
+        assert_eq!( "aaa\nbbb\n", line);
+    }
+
+    #[test]
+    fn test_stdout_with_redirect() {
+        let child = Command::new("sh").arg("-c").arg(SCRIPT_REDIRECT).spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = BufReader::new(ProcReader::from_stdout(pid).with_redirect());
+
+        thread::sleep(Duration::from_secs(4));
+
+        let mut line = String::new();
+        let _ = reader.read_to_string(&mut line);
+        assert_eq!( "aaa\nccc\n", line);
+    }
+
+    #[test]
+    fn test_stderr_without_redirect() {
+        let child = Command::new("sh").arg("-c").arg(SCRIPT_REDIRECT).spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = BufReader::new(ProcReader::from_stderr(pid));
+
+        thread::sleep(Duration::from_secs(4));
+
+        let mut line = String::new();
+        let _ = reader.read_to_string(&mut line);
+        assert_eq!( "ccc\nddd\n", line);
+    }
+
+    #[test]
+    fn test_stderr_with_redirect() {
+        let child = Command::new("sh").arg("-c").arg(SCRIPT_REDIRECT).spawn().unwrap();
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut reader = BufReader::new(ProcReader::from_stderr(pid).with_redirect());
+
+        thread::sleep(Duration::from_secs(4));
+
+        let mut line = String::new();
+        let _ = reader.read_to_string(&mut line);
+        assert_eq!( "bbb\nddd\n", line);
+    }
 }
