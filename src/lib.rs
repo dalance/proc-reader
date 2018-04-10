@@ -235,13 +235,14 @@ impl ProcReader {
     fn set_tracesysgood(pid: Pid) -> Result<()> {
         loop {
             match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
+                // setoptions must be called at stopped condition
                 WaitStatus::Stopped(_, Signal::SIGSTOP) => {
-                    setoptions(
-                        pid,
-                        Options::PTRACE_O_TRACESYSGOOD | Options::PTRACE_O_TRACECLONE
-                            | Options::PTRACE_O_TRACEFORK
-                            | Options::PTRACE_O_TRACEVFORK,
-                    ).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    // set TRACESYSGOOD to enable PtraceSyscall
+                    // set TRACECLONE/FORK/VFORK to trace chile process
+                    let opt = Options::PTRACE_O_TRACESYSGOOD | Options::PTRACE_O_TRACECLONE
+                        | Options::PTRACE_O_TRACEFORK
+                        | Options::PTRACE_O_TRACEVFORK;
+                    setoptions(pid, opt).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
                     break;
                 }
