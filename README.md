@@ -30,7 +30,7 @@ use std::thread;
 
 fn main() {
     // Create a process for reading stdout
-    let mut child = Command::new("sh").arg("-c").arg("sleep 1; echo aaa").spawn().unwrap();
+    let child = Command::new("sh").arg("-c").arg("sleep 1; echo aaa").spawn().unwrap();
 
     // Create ProcReader from pid
     let pid = Pid::from_raw(child.id() as i32);
