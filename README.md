@@ -16,6 +16,10 @@ A std::io::Read implementation for stdout/stderr of other process
 proc-reader = "0.3.0"
 ```
 
+## Supported Platform
+
+- x86_64-unknown-linux-gnu
+
 ## Example
 
 ```rust
