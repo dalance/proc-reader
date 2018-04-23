@@ -2,7 +2,7 @@
 name = "proc-reader"
 version = "0.3.2-pre"
 authors = ["dalance@gmail.com"]
-repository = "https://github.com/dalance/proc-color"
+repository = "https://github.com/dalance/proc-reader"
 keywords = ["reader", "process"]
 categories = ["command-line-interface"]
 license = "MIT"
