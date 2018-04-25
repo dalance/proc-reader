@@ -19,6 +19,11 @@ proc-reader = "0.3.1"
 ## Supported Platform
 
 - x86_64-unknown-linux-gnu
+- x86_64-unknown-linux-musl
+
+The following platforms are implemented, but not tested.
+
+- i686-unknown-linux-musl
 
 ## Example
 
