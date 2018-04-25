@@ -1,35 +1,40 @@
+dist: trusty
+language: rust
+services: docker
 sudo: required
 
-language: rust
 
 addons:
   apt:
     packages:
       - libssl-dev
-      - musl-tools
-      - gcc-multilib
-      - g++-multilib
-
-os:
-- linux
 
 rust:
-- stable
-- beta
-- nightly
+  - stable
+  - beta
+  - nightly
 
 env:
-- TARGET=i686-unknown-linux-musl CC=musl-gcc
-- TARGET=x86_64-unknown-linux-gnu
-- TARGET=x86_64-unknown-linux-musl
+  - TARGET=i686-unknown-linux-musl
+  - TARGET=x86_64-unknown-linux-gnu
+  - TARGET=x86_64-unknown-linux-musl
 
 matrix:
   allow_failures:
     - rust: nightly
 
+before_install:
+  - set -e
+  - rustup self update
+
+install:
+  - sh ci/install.sh
+
 script:
-- if [[ $TARGET != "x86_64-unknown-linux-gnu" ]]; then rustup target add $TARGET; fi
-- cargo test --target=$TARGET
+  - bash ci/script.sh
+
+after_script:
+  - set +e
 
 after_success: |
     if [[ $TRAVIS_OS_NAME == "linux" ]]; then
