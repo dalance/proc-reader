@@ -3,6 +3,11 @@ language: rust
 services: docker
 sudo: required
 
+addons:
+  apt:
+    packages:
+      - libssl-dev
+
 rust:
   - stable
   - beta
