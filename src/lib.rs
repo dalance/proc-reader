@@ -34,7 +34,6 @@ extern crate error_chain;
 extern crate libc;
 extern crate nix;
 
-use libc::user_regs_struct;
 #[allow(deprecated)]
 use nix::sys::ptrace::{attach, detach, ptrace, setoptions, syscall, Options};
 use nix::sys::ptrace::Request::{PTRACE_GETREGS, PTRACE_PEEKDATA};
@@ -63,6 +62,144 @@ error_chain! {
         Nix(::nix::Error) #[doc = "a variant for `nix`"];
         Recv(::std::sync::mpsc::RecvError) #[doc = "a variant for `std::sync::misc::RecvError`"];
         Send(::std::sync::mpsc::SendError<Vec<u8>>) #[doc = "a variant for `std::sync::misc::SendError`"];
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Type per arch
+// -------------------------------------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
+type Word = u64;
+
+#[cfg(target_arch = "x86")]
+type Word = u32;
+
+/// Represents all possible ptrace-accessible registers on x86_64
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug)]
+pub struct UserRegs {
+    pub r15: Word,
+    pub r14: Word,
+    pub r13: Word,
+    pub r12: Word,
+    pub rbp: Word,
+    pub rbx: Word,
+    pub r11: Word,
+    pub r10: Word,
+    pub r9: Word,
+    pub r8: Word,
+    pub rax: Word,
+    pub rcx: Word,
+    pub rdx: Word,
+    pub rsi: Word,
+    pub rdi: Word,
+    pub orig_rax: Word,
+    pub rip: Word,
+    pub cs: Word,
+    pub eflags: Word,
+    pub rsp: Word,
+    pub ss: Word,
+    pub fs_base: Word,
+    pub gs_base: Word,
+    pub ds: Word,
+    pub es: Word,
+    pub fs: Word,
+    pub gs: Word,
+}
+
+/// Represents all possible ptrace-accessible registers on x86
+#[cfg(target_arch = "x86")]
+#[derive(Clone, Copy, Debug)]
+pub struct UserRegs {
+    pub ebx: Word,
+    pub ecx: Word,
+    pub edx: Word,
+    pub esi: Word,
+    pub edi: Word,
+    pub ebp: Word,
+    pub eax: Word,
+    pub ds: Word,
+    pub es: Word,
+    pub fs: Word,
+    pub gs: Word,
+    pub orig_eax: Word,
+    pub eip: Word,
+    pub cs: Word,
+    pub efl: Word,
+    pub uesp: Word,
+    pub ss: Word,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+impl UserRegs {
+    fn syscall(self) -> Word {
+        self.orig_rax
+    }
+
+    fn ret(self) -> Word {
+        self.rax
+    }
+
+    fn arg1(self) -> Word {
+        self.rdi
+    }
+
+    fn arg2(self) -> Word {
+        self.rsi
+    }
+
+    fn arg3(self) -> Word {
+        self.rdx
+    }
+
+    fn arg4(self) -> Word {
+        self.r10
+    }
+
+    fn arg5(self) -> Word {
+        self.r8
+    }
+
+    fn arg6(self) -> Word {
+        self.r9
+    }
+}
+
+#[cfg(target_arch = "x86")]
+#[allow(dead_code)]
+impl UserRegs {
+    fn syscall(self) -> Word {
+        self.orig_eax
+    }
+
+    fn ret(self) -> Word {
+        self.eax
+    }
+
+    fn arg1(self) -> Word {
+        self.ebx
+    }
+
+    fn arg2(self) -> Word {
+        self.ecx
+    }
+
+    fn arg3(self) -> Word {
+        self.edx
+    }
+
+    fn arg4(self) -> Word {
+        self.esi
+    }
+
+    fn arg5(self) -> Word {
+        self.edi
+    }
+
+    fn arg6(self) -> Word {
+        self.ebp
     }
 }
 
@@ -167,31 +304,31 @@ impl ProcReader {
                     let regs =
                         ProcReader::get_regs(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
 
-                    is_syscall_before = if prev_orig_rax == regs.orig_rax {
+                    is_syscall_before = if prev_orig_rax == regs.syscall() {
                         !is_syscall_before
                     } else {
                         true
                     };
-                    prev_orig_rax = regs.orig_rax;
+                    prev_orig_rax = regs.syscall();
 
                     if !is_syscall_before && enable_redirect {
                         fd = ProcReader::update_fd(fd, regs);
                     }
 
-                    let sys_clone = regs.orig_rax == libc::SYS_clone as u64;
-                    let sys_fork = regs.orig_rax == libc::SYS_fork as u64;
-                    let sys_vfork = regs.orig_rax == libc::SYS_vfork as u64;
+                    let sys_clone = regs.syscall() == libc::SYS_clone as Word;
+                    let sys_fork = regs.syscall() == libc::SYS_fork as Word;
+                    let sys_vfork = regs.syscall() == libc::SYS_vfork as Word;
 
                     if (sys_clone || sys_fork || sys_vfork) && !is_syscall_before {
-                        pid = Pid::from_raw(regs.rax as i32);
+                        pid = Pid::from_raw(regs.ret() as i32);
                         pids.push(pid);
                         fds.push(fd.clone());
                         continue;
                     }
 
-                    if regs.orig_rax == libc::SYS_write as u64 && is_syscall_before {
-                        let out = ProcReader::peek_bytes(pid, regs.rsi, regs.rdx);
-                        let out_typ = regs.rdi;
+                    if regs.syscall() == libc::SYS_write as Word && is_syscall_before {
+                        let out = ProcReader::peek_bytes(pid, regs.arg2(), regs.arg3());
+                        let out_typ = regs.arg1();
 
                         let send_stdout = fd[out_typ as usize] == 1
                             && (typ == StdType::Any || typ == StdType::Out);
@@ -255,8 +392,8 @@ impl ProcReader {
         Ok(())
     }
 
-    fn get_regs(pid: Pid) -> Result<user_regs_struct> {
-        let mut regs: user_regs_struct = unsafe { mem::zeroed() };
+    fn get_regs(pid: Pid) -> Result<UserRegs> {
+        let mut regs: UserRegs = unsafe { mem::zeroed() };
         let regs_ptr = NonNull::new(&mut regs).unwrap();
         unsafe {
             #[allow(deprecated)]
@@ -270,7 +407,7 @@ impl ProcReader {
         Ok(regs)
     }
 
-    fn peek_bytes(pid: Pid, addr: u64, size: u64) -> Vec<u8> {
+    fn peek_bytes(pid: Pid, addr: Word, size: Word) -> Vec<u8> {
         let mut vec = (0..(size + 7) / 8)
             .filter_map(|i| unsafe {
                 #[allow(deprecated)]
@@ -288,19 +425,19 @@ impl ProcReader {
         vec
     }
 
-    fn update_fd(mut fd: [u64; 1024], regs: user_regs_struct) -> [u64; 1024] {
+    fn update_fd(mut fd: [Word; 1024], regs: UserRegs) -> [Word; 1024] {
         // detect dup2 for redirect
-        if regs.orig_rax == libc::SYS_dup2 as u64 {
-            let src = regs.rdi;
-            let dst = regs.rsi;
+        if regs.syscall() == libc::SYS_dup2 as Word {
+            let src = regs.arg1();
+            let dst = regs.arg2();
             fd[dst as usize] = fd[src as usize];
         }
 
         // detect fcntl for fd backup
-        if regs.orig_rax == libc::SYS_fcntl as u64 {
-            if regs.rsi == libc::F_DUPFD as u64 {
-                let src = regs.rdi;
-                let dst = regs.rax;
+        if regs.syscall() == libc::SYS_fcntl as Word {
+            if regs.arg2() == libc::F_DUPFD as Word {
+                let src = regs.arg1();
+                let dst = regs.ret();
                 fd[dst as usize] = fd[src as usize];
             }
         }

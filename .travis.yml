@@ -15,12 +15,18 @@ rust:
 - beta
 - nightly
 
+env:
+- TARGET=i686-unknown-linux-musl
+- TARGET=x86_64-unknown-linux-gnu
+- TARGET=x86_64-unknown-linux-musl
+
 matrix:
   allow_failures:
     - rust: nightly
 
 script:
-- cargo test
+- rustup target add $TARGET
+- cargo test --target=$TARGET
 
 after_success: |
     if [[ $TRAVIS_OS_NAME == "linux" ]]; then
