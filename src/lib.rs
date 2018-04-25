@@ -75,6 +75,12 @@ type Word = u64;
 #[cfg(target_arch = "x86")]
 type Word = u32;
 
+#[cfg(target_arch = "x86_64")]
+const WORD_BYTES: u64 = 8;
+
+#[cfg(target_arch = "x86")]
+const WORD_BYTES: u32 = 4;
+
 /// Represents all possible ptrace-accessible registers on x86_64
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug)]
@@ -408,18 +414,18 @@ impl ProcReader {
     }
 
     fn peek_bytes(pid: Pid, addr: Word, size: Word) -> Vec<u8> {
-        let mut vec = (0..(size + 7) / 8)
+        let mut vec = (0..(size + WORD_BYTES - 1) / WORD_BYTES)
             .filter_map(|i| unsafe {
                 #[allow(deprecated)]
                 ptrace(
                     PTRACE_PEEKDATA,
                     pid,
-                    (addr + 8 * i) as *mut libc::c_void,
+                    (addr + WORD_BYTES * i) as *mut libc::c_void,
                     ptr::null_mut(),
                 ).map(|l| mem::transmute(l))
                     .ok()
             })
-            .collect::<Vec<[u8; 8]>>()
+            .collect::<Vec<[u8; WORD_BYTES as usize]>>()
             .concat();
         vec.truncate(size as usize);
         vec
