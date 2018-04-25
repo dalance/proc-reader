@@ -6,6 +6,9 @@ addons:
   apt:
     packages:
       - libssl-dev
+      - musl-tools
+      - gcc-multilib
+      - g++-multilib
 
 os:
 - linux
@@ -23,9 +26,6 @@ env:
 matrix:
   allow_failures:
     - rust: nightly
-
-before_script:
-- sudo apt-get -qq install musl-tools
 
 script:
 - if [[ $TARGET != "x86_64-unknown-linux-gnu" ]]; then rustup target add $TARGET; fi
