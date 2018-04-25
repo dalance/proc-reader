@@ -24,6 +24,9 @@ matrix:
   allow_failures:
     - rust: nightly
 
+before_script:
+- sudo apt-get -qq install musl-tools
+
 script:
 - rustup target add $TARGET
 - cargo test --target=$TARGET
