@@ -407,7 +407,7 @@ impl ProcReader {
                 PTRACE_GETREGS,
                 pid,
                 ptr::null_mut(),
-                regs_ptr.as_ptr() as *mut libc::c_void,
+                regs_ptr.as_ptr() as *mut nix::libc::c_void,
             );
         }
         Ok(regs)
@@ -420,7 +420,7 @@ impl ProcReader {
                 ptrace(
                     PTRACE_PEEKDATA,
                     pid,
-                    (addr + WORD_BYTES * i) as *mut libc::c_void,
+                    (addr + WORD_BYTES * i) as *mut nix::libc::c_void,
                     ptr::null_mut(),
                 ).map(|l| mem::transmute(l))
                     .ok()
