@@ -1,0 +1,5 @@
+[target.i686-unknown-linux-gnu]
+image = "dalance/i686-unknown-linux-gnu:v0.0.3"
+
+[target.i686-unknown-linux-musl]
+image = "dalance/i686-unknown-linux-musl:v0.0.2"
