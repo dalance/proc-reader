@@ -1,4 +1,4 @@
-FROM i386/ubuntu:12.04
+FROM i386/ubuntu:14.04
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -28,4 +28,4 @@ ENV OPENSSL_DIR=/openssl \
     OPENSSL_INCLUDE_DIR=/openssl/include \
     OPENSSL_LIB_DIR=/openssl/lib
 
-RUN rm /usr/lib/gcc/i686-linux-gnu/4.6/include/stddef.h
+RUN rm /usr/lib/gcc/i686-linux-gnu/4.8/include/stddef.h
