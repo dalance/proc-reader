@@ -649,6 +649,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn test_stdout_with_redirect() {
         let child = Command::new("sh")
             .arg("-c")
@@ -683,6 +684,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn test_stderr_with_redirect() {
         let child = Command::new("sh")
             .arg("-c")
