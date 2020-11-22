@@ -11,7 +11,7 @@ description = "A std::io::Read implementation for stdout/stderr of other procces
 build = "build.rs"
 
 [dependencies]
-error-chain = "0.11.0"
+error-chain = "0.12.4"
 libc        = "0.2.40"
 #nix         = "0.10.0"
 nix         = { git = "https://github.com/nix-rust/nix" }
