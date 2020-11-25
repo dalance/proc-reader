@@ -3,9 +3,6 @@
 //! # Examples
 //!
 //! ```
-//! # extern crate nix;
-//! # extern crate proc_reader;
-//! # use nix::unistd::Pid;
 //! # use proc_reader::ProcReader;
 //! # use std::process::Command;
 //! # use std::io::Read;
@@ -16,8 +13,7 @@
 //! let mut child = Command::new("sh").arg("-c").arg("sleep 1; echo aaa").spawn().unwrap();
 //!
 //! // Create ProcReader from pid
-//! let pid = Pid::from_raw(child.id() as i32);
-//! let mut reader = ProcReader::from_stdout(pid);
+//! let mut reader = ProcReader::from_stdout(child.id());
 //!
 //! // Wait the end of process
 //! thread::sleep(Duration::from_secs(2));
@@ -29,40 +25,31 @@
 //! # }
 //! ```
 
-#[macro_use]
-extern crate error_chain;
-extern crate libc;
-extern crate nix;
-
-#[allow(deprecated)]
-use nix::sys::ptrace::{attach, detach, ptrace, setoptions, syscall, Options};
-use nix::sys::ptrace::Request::{PTRACE_GETREGS, PTRACE_PEEKDATA};
+use libc::user_regs_struct;
+use nix::sys::ptrace::{self, AddressType, Options};
 use nix::sys::signal::Signal;
-use nix::sys::wait::{waitpid, WaitStatus};
+use nix::sys::wait::{self, WaitStatus};
 use nix::unistd::Pid;
 use std::io::Read;
 use std::mem;
-use std::ptr::{self, NonNull};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, JoinHandle};
+use thiserror::Error;
 
 // -------------------------------------------------------------------------------------------------
 // Error
 // -------------------------------------------------------------------------------------------------
 
-error_chain! {
-    errors {
-        #[doc = "a variant for process access error"]
-        ProcAccessFailed(pid: Pid) {
-            description("process access failed")
-            display("failed to access process ({})\n", pid)
-        }
-    }
-    foreign_links {
-        Nix(::nix::Error) #[doc = "a variant for `nix`"];
-        Recv(::std::sync::mpsc::RecvError) #[doc = "a variant for `std::sync::misc::RecvError`"];
-        Send(::std::sync::mpsc::SendError<Vec<u8>>) #[doc = "a variant for `std::sync::misc::SendError`"];
-    }
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("failed to access process ({pid})")]
+    ProcAccessFailed { pid: Pid },
+    #[error(transparent)]
+    Nix(#[from] nix::Error),
+    #[error(transparent)]
+    Recv(#[from] std::sync::mpsc::RecvError),
+    #[error(transparent)]
+    Send(#[from] std::sync::mpsc::SendError<Vec<u8>>),
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -84,92 +71,46 @@ const WORD_BYTES: u32 = 4;
 /// Represents all possible ptrace-accessible registers on x86_64
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug)]
-pub struct UserRegs {
-    pub r15: Word,
-    pub r14: Word,
-    pub r13: Word,
-    pub r12: Word,
-    pub rbp: Word,
-    pub rbx: Word,
-    pub r11: Word,
-    pub r10: Word,
-    pub r9: Word,
-    pub r8: Word,
-    pub rax: Word,
-    pub rcx: Word,
-    pub rdx: Word,
-    pub rsi: Word,
-    pub rdi: Word,
-    pub orig_rax: Word,
-    pub rip: Word,
-    pub cs: Word,
-    pub eflags: Word,
-    pub rsp: Word,
-    pub ss: Word,
-    pub fs_base: Word,
-    pub gs_base: Word,
-    pub ds: Word,
-    pub es: Word,
-    pub fs: Word,
-    pub gs: Word,
-}
+struct UserRegs(user_regs_struct);
 
 /// Represents all possible ptrace-accessible registers on x86
 #[cfg(target_arch = "x86")]
 #[derive(Clone, Copy, Debug)]
-pub struct UserRegs {
-    pub ebx: Word,
-    pub ecx: Word,
-    pub edx: Word,
-    pub esi: Word,
-    pub edi: Word,
-    pub ebp: Word,
-    pub eax: Word,
-    pub ds: Word,
-    pub es: Word,
-    pub fs: Word,
-    pub gs: Word,
-    pub orig_eax: Word,
-    pub eip: Word,
-    pub cs: Word,
-    pub efl: Word,
-    pub uesp: Word,
-    pub ss: Word,
-}
+struct UserRegs(user_regs_struct);
 
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 impl UserRegs {
     fn syscall(self) -> Word {
-        self.orig_rax
+        self.0.orig_rax
     }
 
     fn ret(self) -> Word {
-        self.rax
+        self.0.rax
     }
 
     fn arg1(self) -> Word {
-        self.rdi
+        self.0.rdi
     }
 
     fn arg2(self) -> Word {
-        self.rsi
+        self.0.rsi
     }
 
     fn arg3(self) -> Word {
-        self.rdx
+        self.0.rdx
     }
 
     fn arg4(self) -> Word {
-        self.r10
+        self.0.r10
     }
 
     fn arg5(self) -> Word {
-        self.r8
+        self.0.r8
     }
 
     fn arg6(self) -> Word {
-        self.r9
+        self.0.r9
     }
 }
 
@@ -177,35 +118,35 @@ impl UserRegs {
 #[allow(dead_code)]
 impl UserRegs {
     fn syscall(self) -> Word {
-        self.orig_eax
+        self.0.orig_eax
     }
 
     fn ret(self) -> Word {
-        self.eax
+        self.0.eax
     }
 
     fn arg1(self) -> Word {
-        self.ebx
+        self.0.ebx
     }
 
     fn arg2(self) -> Word {
-        self.ecx
+        self.0.ecx
     }
 
     fn arg3(self) -> Word {
-        self.edx
+        self.0.edx
     }
 
     fn arg4(self) -> Word {
-        self.esi
+        self.0.esi
     }
 
     fn arg5(self) -> Word {
-        self.edi
+        self.0.edi
     }
 
     fn arg6(self) -> Word {
-        self.ebp
+        self.0.ebp
     }
 }
 
@@ -236,17 +177,20 @@ enum StdType {
 
 impl ProcReader {
     /// Create a new `ProcReader` for stdout/stderr of the process specified by `pid`
-    pub fn from_stdany(pid: Pid) -> Self {
+    pub fn from_stdany(pid: u32) -> Self {
+        let pid = Pid::from_raw(pid as i32);
         ProcReader::new(pid, StdType::Any)
     }
 
     /// Create a new `ProcReader` for stdout of the process specified by `pid`
-    pub fn from_stdout(pid: Pid) -> Self {
+    pub fn from_stdout(pid: u32) -> Self {
+        let pid = Pid::from_raw(pid as i32);
         ProcReader::new(pid, StdType::Out)
     }
 
     /// Create a new `ProcReader` for stderr of the process specified by `pid`
-    pub fn from_stderr(pid: Pid) -> Self {
+    pub fn from_stderr(pid: u32) -> Self {
+        let pid = Pid::from_raw(pid as i32);
         ProcReader::new(pid, StdType::Err)
     }
 
@@ -284,9 +228,9 @@ impl ProcReader {
         typ: StdType,
         ctl_rx: Receiver<ProcReaderMsg>,
         buf_tx: Sender<Vec<u8>>,
-    ) -> Result<()> {
-        attach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
-        ProcReader::set_tracesysgood(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+    ) -> Result<(), Error> {
+        ptrace::attach(pid).map_err(|_| Error::ProcAccessFailed { pid })?;
+        ProcReader::set_tracesysgood(pid).map_err(|_| Error::ProcAccessFailed { pid })?;
 
         // pid stack
         let mut pids = Vec::new();
@@ -305,10 +249,10 @@ impl ProcReader {
 
         loop {
             let mut pid = *pids.last().unwrap();
-            match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
+            match wait::waitpid(pid, None).map_err(|_| Error::ProcAccessFailed { pid })? {
                 WaitStatus::PtraceSyscall(_) => {
                     let regs =
-                        ProcReader::get_regs(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                        ProcReader::get_regs(pid).map_err(|_| Error::ProcAccessFailed { pid })?;
 
                     is_syscall_before = if prev_orig_rax == regs.syscall() {
                         !is_syscall_before
@@ -360,37 +304,38 @@ impl ProcReader {
 
             match ctl_rx.try_recv() {
                 Ok(ProcReaderMsg::Stop) => {
-                    detach(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    ptrace::detach(pid, None).map_err(|_| Error::ProcAccessFailed { pid })?;
                     break;
                 }
                 Ok(ProcReaderMsg::Redirect) => {
                     enable_redirect = true;
-                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    ptrace::syscall(pid, None).map_err(|_| Error::ProcAccessFailed { pid })?;
                 }
                 _ => {
-                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    ptrace::syscall(pid, None).map_err(|_| Error::ProcAccessFailed { pid })?;
                 }
             }
         }
         Ok(())
     }
 
-    fn set_tracesysgood(pid: Pid) -> Result<()> {
+    fn set_tracesysgood(pid: Pid) -> Result<(), Error> {
         loop {
-            match waitpid(pid, None).chain_err(|| ErrorKind::ProcAccessFailed(pid))? {
+            match wait::waitpid(pid, None).map_err(|_| Error::ProcAccessFailed { pid })? {
                 // setoptions must be called at stopped condition
                 WaitStatus::Stopped(_, Signal::SIGSTOP) => {
                     // set TRACESYSGOOD to enable PtraceSyscall
                     // set TRACECLONE/FORK/VFORK to trace chile process
-                    let opt = Options::PTRACE_O_TRACESYSGOOD | Options::PTRACE_O_TRACECLONE
+                    let opt = Options::PTRACE_O_TRACESYSGOOD
+                        | Options::PTRACE_O_TRACECLONE
                         | Options::PTRACE_O_TRACEFORK
                         | Options::PTRACE_O_TRACEVFORK;
-                    setoptions(pid, opt).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
-                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    ptrace::setoptions(pid, opt).map_err(|_| Error::ProcAccessFailed { pid })?;
+                    ptrace::syscall(pid, None).map_err(|_| Error::ProcAccessFailed { pid })?;
                     break;
                 }
                 _ => {
-                    syscall(pid).chain_err(|| ErrorKind::ProcAccessFailed(pid))?;
+                    ptrace::syscall(pid, None).map_err(|_| Error::ProcAccessFailed { pid })?;
                 }
             }
         }
@@ -398,31 +343,16 @@ impl ProcReader {
         Ok(())
     }
 
-    fn get_regs(pid: Pid) -> Result<UserRegs> {
-        let mut regs: UserRegs = unsafe { mem::zeroed() };
-        let regs_ptr = NonNull::new(&mut regs).unwrap();
-        unsafe {
-            #[allow(deprecated)]
-            let _ = ptrace(
-                PTRACE_GETREGS,
-                pid,
-                ptr::null_mut(),
-                regs_ptr.as_ptr() as *mut nix::libc::c_void,
-            );
-        }
+    fn get_regs(pid: Pid) -> Result<UserRegs, Error> {
+        let regs = ptrace::getregs(pid).map(|x| UserRegs(x))?;
         Ok(regs)
     }
 
     fn peek_bytes(pid: Pid, addr: Word, size: Word) -> Vec<u8> {
         let mut vec = (0..(size + WORD_BYTES - 1) / WORD_BYTES)
-            .filter_map(|i| unsafe {
-                #[allow(deprecated)]
-                ptrace(
-                    PTRACE_PEEKDATA,
-                    pid,
-                    (addr + WORD_BYTES * i) as *mut nix::libc::c_void,
-                    ptr::null_mut(),
-                ).map(|l| mem::transmute(l))
+            .filter_map(|i| {
+                ptrace::read(pid, (addr + WORD_BYTES * i) as AddressType)
+                    .map(|l| unsafe { mem::transmute(l) })
                     .ok()
             })
             .collect::<Vec<[u8; WORD_BYTES as usize]>>()
@@ -510,8 +440,8 @@ mod tests {
     use super::*;
     use std::io::BufReader;
     use std::process::Command;
-    use std::time::Duration;
     use std::thread;
+    use std::time::Duration;
 
     static SCRIPT: &'static str = r#"
         sleep 1;
@@ -539,8 +469,7 @@ mod tests {
     #[test]
     fn test_bufreader() {
         let child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stdout(pid));
+        let mut reader = BufReader::new(ProcReader::from_stdout(child.id()));
 
         thread::sleep(Duration::from_secs(4));
 
@@ -552,8 +481,7 @@ mod tests {
     #[test]
     fn test_short_array() {
         let child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = ProcReader::from_stdout(pid);
+        let mut reader = ProcReader::from_stdout(child.id());
 
         thread::sleep(Duration::from_secs(4));
 
@@ -565,8 +493,7 @@ mod tests {
     #[test]
     fn test_kill() {
         let mut child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = ProcReader::from_stdout(pid);
+        let mut reader = ProcReader::from_stdout(child.id());
         let _ = child.kill();
 
         thread::sleep(Duration::from_secs(4));
@@ -574,16 +501,15 @@ mod tests {
         let mut buf = [0; 10];
         let ret = reader.read_exact(&mut buf);
         assert_eq!(
-            &format!("{:?}", ret)[0..70],
-            "Err(Custom { kind: Other, error: StringError(\"failed to access process"
+            &format!("{:?}", ret)[0..60],
+            "Err(Custom { kind: Other, error: \"failed to access process ("
         );
     }
 
     #[test]
     fn test_kill2() {
         let mut child = Command::new("perl").arg("-e").arg(SCRIPT).spawn().unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = ProcReader::from_stdout(pid);
+        let mut reader = ProcReader::from_stdout(child.id());
 
         thread::sleep(Duration::from_secs(2));
         let _ = child.kill();
@@ -592,8 +518,8 @@ mod tests {
         let mut buf = [0; 10];
         let ret = reader.read_exact(&mut buf);
         assert_eq!(
-            &format!("{:?}", ret)[0..80],
-            "Err(Custom { kind: UnexpectedEof, error: StringError(\"failed to fill whole buffe"
+            &format!("{:?}", ret)[0..60],
+            "Err(Custom { kind: UnexpectedEof, error: \"failed to fill who"
         );
     }
 
@@ -604,8 +530,7 @@ mod tests {
             .arg(SCRIPT_WITH_ERR)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stderr(pid));
+        let mut reader = BufReader::new(ProcReader::from_stderr(child.id()));
 
         thread::sleep(Duration::from_secs(2));
 
@@ -621,8 +546,7 @@ mod tests {
             .arg(SCRIPT_WITH_ERR)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stdany(pid));
+        let mut reader = BufReader::new(ProcReader::from_stdany(child.id()));
 
         thread::sleep(Duration::from_secs(2));
 
@@ -638,8 +562,7 @@ mod tests {
             .arg(SCRIPT_REDIRECT)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stdout(pid));
+        let mut reader = BufReader::new(ProcReader::from_stdout(child.id()));
 
         thread::sleep(Duration::from_secs(4));
 
@@ -656,8 +579,7 @@ mod tests {
             .arg(SCRIPT_REDIRECT)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stdout(pid).with_redirect());
+        let mut reader = BufReader::new(ProcReader::from_stdout(child.id()).with_redirect());
 
         thread::sleep(Duration::from_secs(4));
 
@@ -673,8 +595,7 @@ mod tests {
             .arg(SCRIPT_REDIRECT)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stderr(pid));
+        let mut reader = BufReader::new(ProcReader::from_stderr(child.id()));
 
         thread::sleep(Duration::from_secs(4));
 
@@ -691,8 +612,7 @@ mod tests {
             .arg(SCRIPT_REDIRECT)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
-        let mut reader = BufReader::new(ProcReader::from_stderr(pid).with_redirect());
+        let mut reader = BufReader::new(ProcReader::from_stderr(child.id()).with_redirect());
 
         thread::sleep(Duration::from_secs(4));
 

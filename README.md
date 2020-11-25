@@ -20,17 +20,13 @@ proc-reader = "0.4.0"
 
 - x86_64-unknown-linux-gnu
 - x86_64-unknown-linux-musl
-
-The following platforms are implemented, but not tested.
-
+- i686-unknown-linux-gnu
 - i686-unknown-linux-musl
 
 ## Example
 
 ```rust
-extern crate nix;
 extern crate proc_reader;
-use nix::unistd::Pid;
 use proc_reader::ProcReader;
 use std::process::Command;
 use std::io::Read;
@@ -42,8 +38,7 @@ fn main() {
     let child = Command::new("sh").arg("-c").arg("sleep 1; echo aaa").spawn().unwrap();
 
     // Create ProcReader from pid
-    let pid = Pid::from_raw(child.id() as i32);
-    let mut reader = ProcReader::from_stdout(pid);
+    let mut reader = ProcReader::from_stdout(child.id());
 
     // Wait the end of process
     thread::sleep(Duration::from_secs(2));
