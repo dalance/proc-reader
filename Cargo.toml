@@ -23,11 +23,10 @@ skeptic     = "0.13"
 skeptic     = "0.13"
 
 [package.metadata.release]
-dev-version-ext            = "pre"
-pre-release-commit-message = "Prepare to v{{version}}"
-pro-release-commit-message = "Start next development iteration v{{version}}"
+pre-release-commit-message  = "Prepare to v{{version}}"
+post-release-commit-message = "Start next development iteration v{{version}}"
 pre-release-replacements   = [
     { file = "README.md", search = "proc-reader = \"[a-z0-9\\.-]+\"", replace = "proc-reader = \"{{version}}\"" },
 ]
 tag-message                = "Bump version to {{version}}"
-tag-prefix                 = "v"
+tag-prefix                 = ""
