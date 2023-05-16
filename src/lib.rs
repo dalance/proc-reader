@@ -519,7 +519,7 @@ mod tests {
         let ret = reader.read_exact(&mut buf);
         assert_eq!(
             &format!("{:?}", ret)[0..60],
-            "Err(Custom { kind: UnexpectedEof, error: \"failed to fill who"
+            "Err(Error { kind: UnexpectedEof, message: \"failed to fill wh"
         );
     }
 
